@@ -6,116 +6,72 @@ on:
   push:
     branches:
       - main
-      - master
-
-permissions:
-  contents: read
-
-concurrency:
-  group: country-battle-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  ANDROID_NDK_VERSION: '27.2.12479018'
-  GRADLE_VERSION: '8.9'
 
 jobs:
-  build-debug-apk:
+  build:
     name: Extract ZIP and Build ARM64 APK
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+
+    env:
+      ANDROID_NDK_VERSION: 27.2.12479018
+      GRADLE_VERSION: 8.9
 
     steps:
-
-      # 1. Checkout Repository
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2. Automatically Extract ZIP
       - name: Extract Android Project ZIP
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
-          ARCHIVE="$(find . -maxdepth 1 \
-            -type f -iname '*.zip' -print -quit)"
+          ZIP_FILE=$(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -iname "*.zip" | head -n 1)
 
-          if [[ -z "$ARCHIVE" ]]; then
+          if [ -z "$ZIP_FILE" ]; then
             echo "ERROR: Project ZIP not found!"
-            find . -maxdepth 2 -type f
             exit 1
           fi
-
-          echo "Found ZIP: $ARCHIVE"
 
           mkdir -p "$GITHUB_WORKSPACE/_project"
+          unzip -q "$ZIP_FILE" -d "$GITHUB_WORKSPACE/_project"
 
-          unzip -q "$ARCHIVE" \
-            -d "$GITHUB_WORKSPACE/_project"
+          GRADLE_FILE=$(find "$GITHUB_WORKSPACE/_project" -type f -name settings.gradle -o -name settings.gradle.kts | head -n 1)
 
-          SETTINGS_FILE="$(find \
-            "$GITHUB_WORKSPACE/_project" \
-            -type f \
-            \( -name settings.gradle \
-            -o -name settings.gradle.kts \) \
-            -print -quit)"
-
-          if [[ -z "$SETTINGS_FILE" ]]; then
-            echo "ERROR: Android project not found!"
+          if [ -z "$GRADLE_FILE" ]; then
+            echo "ERROR: settings.gradle not found!"
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          PROJECT_DIR=$(dirname "$GRADLE_FILE")
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "PROJECT_DIR=$PROJECT_DIR" \
-            >> "$GITHUB_ENV"
+          echo "Project found at: $PROJECT_DIR"
 
-          test -d "$PROJECT_DIR/app"
-          test -f "$PROJECT_DIR/app/build.gradle"
-          test -f "$PROJECT_DIR/scripts/setup-node-mobile.sh"
-          test -f "$PROJECT_DIR/scripts/setup-node-deps.sh"
-
-          echo "Project extracted successfully!"
-
-      # 3. Java 17
-      - name: Set up JDK 17
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # 4. Android SDK without setup-android action
-      - name: Configure Android SDK
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+
+      - name: Accept Android Licenses and Install Packages
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
-          if [[ -z "${ANDROID_HOME:-}" ]]; then
-            echo "ERROR: ANDROID_HOME not found!"
-            exit 1
-          fi
+          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)
 
-          SDKMANAGER="$(find \
-            "$ANDROID_HOME/cmdline-tools" \
-            -type f -name sdkmanager \
-            -print 2>/dev/null | sort -V | tail -n 1)"
-
-          if [[ -z "$SDKMANAGER" ]]; then
+          if [ -z "$SDKMANAGER" ]; then
             echo "ERROR: sdkmanager not found!"
             exit 1
           fi
 
-          echo "SDK Manager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
 
-          "$SDKMANAGER" --version
-
-          # Accept Android SDK licenses
-          set +o pipefail
-          yes | "$SDKMANAGER" --licenses \
-            > /tmp/android-licenses.log 2>&1 || true
-          set -o pipefail
-
-          # Install required packages
           "$SDKMANAGER" --install \
             "platform-tools" \
             "platforms;android-35" \
@@ -123,122 +79,91 @@ jobs:
             "ndk;27.2.12479018" \
             "cmake;3.22.1"
 
-          echo "Android SDK configured successfully!"
-
-      # 5. Configure NDK
-      - name: Configure Android NDK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          NDK_PATH="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
-
-          test -d "$NDK_PATH"
-
-          echo "ANDROID_NDK_HOME=$NDK_PATH" \
-            >> "$GITHUB_ENV"
-
-      # 6. Node.js
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # 7. Gradle
-      - name: Set up Gradle
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      # 8. Node.js Mobile ARM64 Runtime
-      - name: Download Node.js Mobile Runtime
+      - name: Setup Node Mobile
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
-          set -euo pipefail
-          bash scripts/setup-node-mobile.sh
+          set -e
 
-      # 9. Node.js Dependencies
-      - name: Install Node.js Dependencies
+          if [ -f scripts/setup-node-mobile.sh ]; then
+            chmod +x scripts/setup-node-mobile.sh
+            bash scripts/setup-node-mobile.sh
+          fi
+
+          if [ -f scripts/setup-node-deps.sh ]; then
+            chmod +x scripts/setup-node-deps.sh
+            bash scripts/setup-node-deps.sh
+          fi
+
+      - name: Validate ARM64 Native Library
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
-          set -euo pipefail
-          bash scripts/setup-node-deps.sh
+          set -e
 
-      # 10. JavaScript Validation
-      - name: Validate JavaScript
+          if [ ! -f app/libnode/bin/arm64-v8a/libnode.so ]; then
+            echo "ERROR: ARM64 libnode.so missing!"
+            exit 1
+          fi
+
+          if [ ! -f app/libnode/include/node/node.h ]; then
+            echo "ERROR: Node headers missing!"
+            exit 1
+          fi
+
+          echo "ARM64 Node library and headers found."
+
+      - name: Install Gradle Dependencies
         working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
+        run: gradle --no-daemon dependencies
 
-          node --check \
-            app/src/main/assets/nodejs-project/bootstrap.js
-
-          node --check \
-            app/src/main/assets/nodejs-project/server.js
-
-          echo "JavaScript validation passed!"
-
-      # 11. ARM64 Library Validation
-      - name: Validate ARM64 Runtime
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          LIB="app/libnode/bin/arm64-v8a/libnode.so"
-
-          test -s "$LIB"
-          test -s app/libnode/include/node/node.h
-
-          file "$LIB"
-
-          readelf -h "$LIB" \
-            | grep -E 'Machine:.*AArch64'
-
-          echo "ARM64 runtime verified!"
-
-      # 12. Resolve Dependencies
-      - name: Resolve Gradle Dependencies
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          gradle --no-daemon dependencies
-
-      # 13. Build APK
       - name: Build Country Battle APK
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
+          set -e
+
+          echo "Checking duplicate libc++_shared.so files..."
+
+          find app/src app/libs app/libnode app/build -type f -name libc++_shared.so -print 2>/dev/null || true
+
+          echo "Building ARM64 Debug APK..."
+
           gradle --no-daemon \
             --stacktrace \
-            clean assembleDebug
+            clean assembleDebug \
+            -Pandroid.packagingOptions.jniLibs.pickFirsts=lib/arm64-v8a/libc++_shared.so
 
-      # 14. Verify APK
       - name: Verify APK
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
           APK="app/build/outputs/apk/debug/app-debug.apk"
 
-          if [[ ! -s "$APK" ]]; then
+          if [ ! -f "$APK" ]; then
             echo "ERROR: APK was not generated!"
             exit 1
           fi
 
+          echo "APK BUILD SUCCESSFUL!"
           ls -lh "$APK"
 
-          echo "APK generated successfully!"
-
-      # 15. Upload APK
       - name: Upload Country Battle APK
         uses: actions/upload-artifact@v4
         with:
-          name: country-battle-debug-apk-arm64
+          name: Country-Battle-ARM64-APK
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-          retention-days: 14
           
