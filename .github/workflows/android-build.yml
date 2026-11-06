@@ -20,7 +20,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Extract Android Project ZIP
+      - name: Extract ZIP and Find Project
         shell: bash
         run: |
           set -e
@@ -45,7 +45,7 @@ jobs:
           PROJECT_DIR=$(dirname "$GRADLE_FILE")
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "Project found at: $PROJECT_DIR"
+          echo "Project: $PROJECT_DIR"
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -58,7 +58,7 @@ jobs:
         with:
           packages: ''
 
-      - name: Accept Android Licenses and Install Packages
+      - name: Accept Licenses and Install Android Packages
         shell: bash
         run: |
           set -e
@@ -105,56 +105,60 @@ jobs:
             bash scripts/setup-node-deps.sh
           fi
 
-      - name: Validate ARM64 Native Library
+      - name: Validate ARM64 Library
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -e
 
-          if [ ! -f app/libnode/bin/arm64-v8a/libnode.so ]; then
+          test -f app/libnode/bin/arm64-v8a/libnode.so || {
             echo "ERROR: ARM64 libnode.so missing!"
             exit 1
-          fi
+          }
 
-          if [ ! -f app/libnode/include/node/node.h ]; then
+          test -f app/libnode/include/node/node.h || {
             echo "ERROR: Node headers missing!"
             exit 1
-          fi
+          }
 
-          echo "ARM64 Node library and headers found."
+          echo "ARM64 library validation successful."
+
+      - name: Create Native Library Packaging Fix
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/country-battle-packaging.init.gradle" <<'EOF'
+          gradle.projectsEvaluated {
+              allprojects { project ->
+                  if (project.plugins.hasPlugin("com.android.application")) {
+                      def androidExt = project.extensions.findByName("android")
+
+                      if (androidExt != null) {
+                          androidExt.packagingOptions.jniLibs.pickFirsts.add(
+                              "lib/arm64-v8a/libc++_shared.so"
+                          )
+
+                          println "Country Battle FIX: pickFirst enabled for libc++_shared.so"
+                      }
+                  }
+              }
+          }
+          EOF
+
+          echo "Gradle packaging fix created."
 
       - name: Install Gradle Dependencies
         working-directory: ${{ env.PROJECT_DIR }}
         run: gradle --no-daemon dependencies
 
-      - name: Remove Duplicate C++ Runtime
+      - name: Build Country Battle ARM64 APK
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -e
 
-          echo "Searching duplicate libc++_shared.so files..."
-
-          find app/src -type f \
-            -path '*/jniLibs/*' \
-            -name 'libc++_shared.so' \
-            -print \
-            -delete
-
-          echo "Checking remaining source libraries..."
-
-          find app/src -type f \
-            -path '*/jniLibs/*' \
-            -name 'libc++_shared.so' \
-            -print
-
-      - name: Build Country Battle APK
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        run: |
-          set -e
-
-          gradle --no-daemon \
+          gradle \
+            --no-daemon \
+            --init-script "$RUNNER_TEMP/country-battle-packaging.init.gradle" \
             --stacktrace \
             clean assembleDebug
 
@@ -167,7 +171,7 @@ jobs:
           APK="app/build/outputs/apk/debug/app-debug.apk"
 
           if [ ! -f "$APK" ]; then
-            echo "ERROR: APK was not generated!"
+            echo "ERROR: APK not generated!"
             exit 1
           fi
 
