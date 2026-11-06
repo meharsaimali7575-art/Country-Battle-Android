@@ -74,7 +74,7 @@ jobs:
             -iname '*.zip' -print -quit)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Project ZIP not found in repository root"
+            echo "ERROR: Project ZIP not found"
             exit 1
           fi
 
@@ -118,8 +118,6 @@ jobs:
           VERSION="v18.20.4"
           API="https://api.github.com/repos/nodejs-mobile/nodejs-mobile/releases/tags/$VERSION"
 
-          echo "Getting official Node Mobile release information..."
-
           curl -fL --retry 3 "$API" -o /tmp/node-release.json
 
           ASSET_URL=$(python3 - <<'PY'
@@ -136,14 +134,13 @@ jobs:
           ]
 
           if not matches:
-              print("No Android ZIP asset found.", file=sys.stderr)
-              print("Available assets:", file=sys.stderr)
+              print("Android ZIP asset not found", file=sys.stderr)
               for a in assets:
                   print(a["name"], file=sys.stderr)
               sys.exit(1)
 
-          if len(matches) > 1:
-              print("Multiple Android ZIP assets found:", file=sys.stderr)
+          if len(matches) != 1:
+              print("Multiple Android ZIP assets found", file=sys.stderr)
               for a in matches:
                   print(a["name"], file=sys.stderr)
               sys.exit(1)
@@ -152,12 +149,11 @@ jobs:
           PY
           )
 
-          echo "Downloading: $ASSET_URL"
-
           curl -fL --retry 3 "$ASSET_URL" \
             -o /tmp/node-mobile-android.zip
 
           mkdir -p /tmp/node-mobile-extracted
+
           unzip -q /tmp/node-mobile-android.zip \
             -d /tmp/node-mobile-extracted
 
@@ -168,7 +164,7 @@ jobs:
             -path '*/node/node.h' -print -quit)
 
           if [ -z "$LIB" ] || [ -z "$HEADER" ]; then
-            echo "ERROR: Required ARM64 library or Node headers missing."
+            echo "ERROR: ARM64 library or Node headers missing"
             find /tmp/node-mobile-extracted -type f | head -100
             exit 1
           fi
@@ -177,8 +173,6 @@ jobs:
           INCLUDE_DIR="${HEADER%/node/node.h}"
 
           mkdir -p "$PROJECT_DIR/app/libnode/bin"
-          mkdir -p "$PROJECT_DIR/app/libnode/include"
-
           cp -a "$BIN_DIR/." "$PROJECT_DIR/app/libnode/bin/"
 
           rm -rf "$PROJECT_DIR/app/libnode/include"
@@ -187,11 +181,7 @@ jobs:
           cp -a "$INCLUDE_DIR/." \
             "$PROJECT_DIR/app/libnode/include/"
 
-          test -f "$PROJECT_DIR/app/libnode/bin/arm64-v8a/libnode.so"
-          test -f "$PROJECT_DIR/app/libnode/include/node/node.h"
-
-          echo "Node Mobile ARM64 installed:"
-          ls -lh "$PROJECT_DIR/app/libnode/bin/arm64-v8a/libnode.so"
+          echo "Node Mobile ARM64 installed."
 
       - name: Verify ARM64 Node Library
         shell: bash
@@ -201,71 +191,43 @@ jobs:
           LIB="$PROJECT_DIR/app/libnode/bin/arm64-v8a/libnode.so"
 
           if [ ! -f "$LIB" ]; then
-            echo "ERROR: ARM64 libnode.so is missing"
+            echo "ERROR: ARM64 libnode.so missing"
             exit 1
           fi
 
-          file "$LIB"
           ls -lh "$LIB"
+          echo "ARM64 Node library verified."
 
-      - name: Fix Native Library Packaging
-        working-directory: ${{ env.PROJECT_DIR }}
+      - name: Remove Duplicate C++ Runtime
         shell: bash
         run: |
           set -e
 
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          import sys
+          echo "Searching app source for duplicate libc++_shared.so..."
 
-          gradle_file = Path("app/build.gradle")
+          find "$PROJECT_DIR/app" \
+            -type f \
+            -name 'libc++_shared.so' \
+            ! -path '*/build/*' \
+            -print \
+            -delete
 
-          if not gradle_file.exists():
-              gradle_file = Path("app/build.gradle.kts")
+          echo "Checking source folders..."
 
-          if not gradle_file.exists():
-              print("ERROR: App Gradle file not found")
-              sys.exit(1)
+          REMAINING=$(find "$PROJECT_DIR/app" \
+            -type f \
+            -name 'libc++_shared.so' \
+            ! -path '*/build/*' \
+            -print)
 
-          content = gradle_file.read_text()
+          if [ -n "$REMAINING" ]; then
+            echo "ERROR: Duplicate C++ runtime remains:"
+            echo "$REMAINING"
+            exit 1
+          fi
 
-          if "libc++_shared.so" in content:
-              print("Packaging rule already exists.")
-              sys.exit(0)
-
-          match = re.search(r'(?m)^([ \t]*)android\s*\{', content)
-
-          if not match:
-              print("ERROR: android { } block not found")
-              sys.exit(1)
-
-          indent = match.group(1) + "    "
-
-          if gradle_file.suffix == ".kts":
-              rule = (
-                  "\n" + indent + "packaging {\n"
-                  + indent + "    jniLibs {\n"
-                  + indent + '        pickFirsts += "lib/arm64-v8a/libc++_shared.so"\n'
-                  + indent + "    }\n"
-                  + indent + "}\n"
-              )
-          else:
-              rule = (
-                  "\n" + indent + "packaging {\n"
-                  + indent + "    jniLibs {\n"
-                  + indent + "        pickFirsts += ['lib/arm64-v8a/libc++_shared.so']\n"
-                  + indent + "    }\n"
-                  + indent + "}\n"
-              )
-
-          position = match.end()
-          gradle_file.write_text(
-              content[:position] + rule + content[position:]
-          )
-
-          print("Native packaging rule added.")
-          PY
+          echo "Duplicate source runtime removed."
+          echo "CMake will provide the native C++ runtime."
 
       - name: Build Country Battle ARM64 APK
         working-directory: ${{ env.PROJECT_DIR }}
