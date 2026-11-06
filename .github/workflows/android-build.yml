@@ -67,16 +67,18 @@ jobs:
         shell: bash
         run: |
           set -e
+
           mkdir -p _project
 
           ZIP_FILE=$(find . -maxdepth 1 -type f \
             -iname '*.zip' -print -quit)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Project ZIP not found"
+            echo "ERROR: Project ZIP not found in repository root"
             exit 1
           fi
 
+          echo "Extracting: $ZIP_FILE"
           unzip -q "$ZIP_FILE" -d _project
 
           SETTINGS_FILE=$(find _project -type f \
@@ -94,55 +96,117 @@ jobs:
           echo "Project directory: $PROJECT_DIR"
 
       - name: Setup Node Mobile Dependencies
-        working-directory: _project
         shell: bash
         run: |
           set -e
 
-          if [ -f scripts/setup-node-mobile.sh ]; then
-            chmod +x scripts/setup-node-mobile.sh
-            bash scripts/setup-node-mobile.sh
+          if [ -f "$PROJECT_DIR/scripts/setup-node-mobile.sh" ]; then
+            chmod +x "$PROJECT_DIR/scripts/setup-node-mobile.sh"
+            bash "$PROJECT_DIR/scripts/setup-node-mobile.sh"
           fi
 
-          if [ -f scripts/setup-node-deps.sh ]; then
-            chmod +x scripts/setup-node-deps.sh
-            bash scripts/setup-node-deps.sh
+          if [ -f "$PROJECT_DIR/scripts/setup-node-deps.sh" ]; then
+            chmod +x "$PROJECT_DIR/scripts/setup-node-deps.sh"
+            bash "$PROJECT_DIR/scripts/setup-node-deps.sh"
           fi
 
-      - name: Locate and Prepare ARM64 Node Library
+      - name: Download Official Node Mobile ARM64
         shell: bash
         run: |
           set -e
 
-          TARGET="$PROJECT_DIR/app/libnode/bin/arm64-v8a/libnode.so"
-          mkdir -p "$(dirname "$TARGET")"
+          VERSION="v18.20.4"
+          API="https://api.github.com/repos/nodejs-mobile/nodejs-mobile/releases/tags/$VERSION"
 
-          if [ -f "$TARGET" ]; then
-            echo "ARM64 Node library already exists."
-          else
-            echo "Searching project for ARM64 libnode.so..."
+          echo "Getting official Node Mobile release information..."
 
-            SOURCE=$(find "$PROJECT_DIR" -type f \
-              -path '*/arm64-v8a/libnode.so' \
-              -print -quit)
+          curl -fL --retry 3 "$API" -o /tmp/node-release.json
 
-            if [ -z "$SOURCE" ]; then
-              echo "ERROR: ARM64 libnode.so was not found."
-              echo "Searching all libnode.so files:"
-              find _project -type f -name 'libnode.so' -print || true
+          ASSET_URL=$(python3 - <<'PY'
+          import json
+          import sys
 
-              echo "Searching libnode directories:"
-              find _project -type d -iname '*libnode*' -print || true
+          data = json.load(open("/tmp/node-release.json"))
+          assets = data.get("assets", [])
 
-              exit 1
-            fi
+          matches = [
+              a for a in assets
+              if "android" in a["name"].lower()
+              and a["name"].lower().endswith(".zip")
+          ]
 
-            echo "Found: $SOURCE"
-            cp "$SOURCE" "$TARGET"
+          if not matches:
+              print("No Android ZIP asset found.", file=sys.stderr)
+              print("Available assets:", file=sys.stderr)
+              for a in assets:
+                  print(a["name"], file=sys.stderr)
+              sys.exit(1)
+
+          if len(matches) > 1:
+              print("Multiple Android ZIP assets found:", file=sys.stderr)
+              for a in matches:
+                  print(a["name"], file=sys.stderr)
+              sys.exit(1)
+
+          print(matches[0]["browser_download_url"])
+          PY
+          )
+
+          echo "Downloading: $ASSET_URL"
+
+          curl -fL --retry 3 "$ASSET_URL" \
+            -o /tmp/node-mobile-android.zip
+
+          mkdir -p /tmp/node-mobile-extracted
+          unzip -q /tmp/node-mobile-android.zip \
+            -d /tmp/node-mobile-extracted
+
+          LIB=$(find /tmp/node-mobile-extracted -type f \
+            -path '*/arm64-v8a/libnode.so' -print -quit)
+
+          HEADER=$(find /tmp/node-mobile-extracted -type f \
+            -path '*/node/node.h' -print -quit)
+
+          if [ -z "$LIB" ] || [ -z "$HEADER" ]; then
+            echo "ERROR: Required ARM64 library or Node headers missing."
+            find /tmp/node-mobile-extracted -type f | head -100
+            exit 1
           fi
 
-          ls -lh "$TARGET"
-          echo "ARM64 Node library is ready."
+          BIN_DIR="${LIB%/arm64-v8a/libnode.so}"
+          INCLUDE_DIR="${HEADER%/node/node.h}"
+
+          mkdir -p "$PROJECT_DIR/app/libnode/bin"
+          mkdir -p "$PROJECT_DIR/app/libnode/include"
+
+          cp -a "$BIN_DIR/." "$PROJECT_DIR/app/libnode/bin/"
+
+          rm -rf "$PROJECT_DIR/app/libnode/include"
+          mkdir -p "$PROJECT_DIR/app/libnode/include"
+
+          cp -a "$INCLUDE_DIR/." \
+            "$PROJECT_DIR/app/libnode/include/"
+
+          test -f "$PROJECT_DIR/app/libnode/bin/arm64-v8a/libnode.so"
+          test -f "$PROJECT_DIR/app/libnode/include/node/node.h"
+
+          echo "Node Mobile ARM64 installed:"
+          ls -lh "$PROJECT_DIR/app/libnode/bin/arm64-v8a/libnode.so"
+
+      - name: Verify ARM64 Node Library
+        shell: bash
+        run: |
+          set -e
+
+          LIB="$PROJECT_DIR/app/libnode/bin/arm64-v8a/libnode.so"
+
+          if [ ! -f "$LIB" ]; then
+            echo "ERROR: ARM64 libnode.so is missing"
+            exit 1
+          fi
+
+          file "$LIB"
+          ls -lh "$LIB"
 
       - name: Fix Native Library Packaging
         working-directory: ${{ env.PROJECT_DIR }}
@@ -196,9 +260,11 @@ jobs:
               )
 
           position = match.end()
-          gradle_file.write_text(content[:position] + rule + content[position:])
+          gradle_file.write_text(
+              content[:position] + rule + content[position:]
+          )
 
-          print("Packaging rule added before Gradle build.")
+          print("Native packaging rule added.")
           PY
 
       - name: Build Country Battle ARM64 APK
@@ -207,7 +273,10 @@ jobs:
         run: |
           set -e
 
-          gradle --no-daemon --stacktrace clean assembleDebug
+          gradle \
+            --no-daemon \
+            --stacktrace \
+            clean assembleDebug
 
       - name: Verify APK
         shell: bash
@@ -221,8 +290,8 @@ jobs:
             exit 1
           fi
 
+          echo "APK successfully generated:"
           ls -lh "$APK"
-          echo "APK successfully generated."
 
       - name: Upload Country Battle APK
         uses: actions/upload-artifact@v4
