@@ -35,7 +35,7 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/_project"
           unzip -q "$ZIP_FILE" -d "$GITHUB_WORKSPACE/_project"
 
-          GRADLE_FILE=$(find "$GITHUB_WORKSPACE/_project" -type f -name settings.gradle -o -name settings.gradle.kts | head -n 1)
+          GRADLE_FILE=$(find "$GITHUB_WORKSPACE/_project" -type f \( -name settings.gradle -o -name settings.gradle.kts \) | head -n 1)
 
           if [ -z "$GRADLE_FILE" ]; then
             echo "ERROR: settings.gradle not found!"
@@ -127,22 +127,36 @@ jobs:
         working-directory: ${{ env.PROJECT_DIR }}
         run: gradle --no-daemon dependencies
 
+      - name: Remove Duplicate C++ Runtime
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "Searching duplicate libc++_shared.so files..."
+
+          find app/src -type f \
+            -path '*/jniLibs/*' \
+            -name 'libc++_shared.so' \
+            -print \
+            -delete
+
+          echo "Checking remaining source libraries..."
+
+          find app/src -type f \
+            -path '*/jniLibs/*' \
+            -name 'libc++_shared.so' \
+            -print
+
       - name: Build Country Battle APK
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -e
 
-          echo "Checking duplicate libc++_shared.so files..."
-
-          find app/src app/libs app/libnode app/build -type f -name libc++_shared.so -print 2>/dev/null || true
-
-          echo "Building ARM64 Debug APK..."
-
           gradle --no-daemon \
             --stacktrace \
-            clean assembleDebug \
-            -Pandroid.packagingOptions.jniLibs.pickFirsts=lib/arm64-v8a/libc++_shared.so
+            clean assembleDebug
 
       - name: Verify APK
         working-directory: ${{ env.PROJECT_DIR }}
