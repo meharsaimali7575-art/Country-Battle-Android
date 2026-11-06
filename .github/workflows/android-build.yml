@@ -21,7 +21,7 @@ concurrency:
 env:
   ANDROID_NDK_VERSION: '27.2.12479018'
   GRADLE_VERSION: '8.9'
-  SOURCE_ZIP: 'CountryBattle_Android_Source.zip'
+  SOURCE_ZIP: 'CountryBattle_Android_Updated_Source.zip'
 
 jobs:
   build-debug-apk:
