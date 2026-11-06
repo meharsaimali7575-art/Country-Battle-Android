@@ -55,7 +55,8 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          accept-android-sdk-licenses: false
+          cmdline-tools-version: 12266719
+          packages: ''
 
       - name: Accept Licenses and Install Android Packages
         shell: bash
@@ -69,7 +70,7 @@ jobs:
             exit 1
           fi
 
-          yes | "$SDKMANAGER" --licenses
+          yes | "$SDKMANAGER" --licenses || true
 
           "$SDKMANAGER" --install \
             "platform-tools" \
