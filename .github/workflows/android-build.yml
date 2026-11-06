@@ -36,7 +36,7 @@ jobs:
           cmdline-tools-version: 12266719
           packages: ''
 
-      - name: Accept Licenses and Install Android Packages
+      - name: Install Android Packages
         shell: bash
         run: |
           set -e
@@ -67,18 +67,16 @@ jobs:
         shell: bash
         run: |
           set -e
-
           mkdir -p _project
 
           ZIP_FILE=$(find . -maxdepth 1 -type f \
             -iname '*.zip' -print -quit)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Project ZIP not found in repository root"
+            echo "ERROR: Project ZIP not found"
             exit 1
           fi
 
-          echo "Extracting: $ZIP_FILE"
           unzip -q "$ZIP_FILE" -d _project
 
           SETTINGS_FILE=$(find _project -type f \
@@ -111,20 +109,40 @@ jobs:
             bash scripts/setup-node-deps.sh
           fi
 
-      - name: Verify ARM64 Node Library
+      - name: Locate and Prepare ARM64 Node Library
         shell: bash
         run: |
           set -e
 
-          LIB="$PROJECT_DIR/app/libnode/bin/arm64-v8a/libnode.so"
+          TARGET="$PROJECT_DIR/app/libnode/bin/arm64-v8a/libnode.so"
+          mkdir -p "$(dirname "$TARGET")"
 
-          if [ ! -f "$LIB" ]; then
-            echo "ERROR: ARM64 libnode.so not found:"
-            echo "$LIB"
-            exit 1
+          if [ -f "$TARGET" ]; then
+            echo "ARM64 Node library already exists."
+          else
+            echo "Searching project for ARM64 libnode.so..."
+
+            SOURCE=$(find "$PROJECT_DIR" -type f \
+              -path '*/arm64-v8a/libnode.so' \
+              -print -quit)
+
+            if [ -z "$SOURCE" ]; then
+              echo "ERROR: ARM64 libnode.so was not found."
+              echo "Searching all libnode.so files:"
+              find _project -type f -name 'libnode.so' -print || true
+
+              echo "Searching libnode directories:"
+              find _project -type d -iname '*libnode*' -print || true
+
+              exit 1
+            fi
+
+            echo "Found: $SOURCE"
+            cp "$SOURCE" "$TARGET"
           fi
 
-          echo "ARM64 Node library found."
+          ls -lh "$TARGET"
+          echo "ARM64 Node library is ready."
 
       - name: Fix Native Library Packaging
         working-directory: ${{ env.PROJECT_DIR }}
@@ -143,19 +161,19 @@ jobs:
               gradle_file = Path("app/build.gradle.kts")
 
           if not gradle_file.exists():
-              print("ERROR: app/build.gradle or app/build.gradle.kts not found")
+              print("ERROR: App Gradle file not found")
               sys.exit(1)
 
           content = gradle_file.read_text()
 
           if "libc++_shared.so" in content:
-              print("Native library packaging rule already exists.")
+              print("Packaging rule already exists.")
               sys.exit(0)
 
           match = re.search(r'(?m)^([ \t]*)android\s*\{', content)
 
           if not match:
-              print("ERROR: Could not find android { } block")
+              print("ERROR: android { } block not found")
               sys.exit(1)
 
           indent = match.group(1) + "    "
@@ -178,10 +196,9 @@ jobs:
               )
 
           position = match.end()
-          content = content[:position] + rule + content[position:]
+          gradle_file.write_text(content[:position] + rule + content[position:])
 
-          gradle_file.write_text(content)
-          print("Native library packaging rule added before Gradle build.")
+          print("Packaging rule added before Gradle build.")
           PY
 
       - name: Build Country Battle ARM64 APK
@@ -190,10 +207,7 @@ jobs:
         run: |
           set -e
 
-          gradle \
-            --no-daemon \
-            --stacktrace \
-            clean assembleDebug
+          gradle --no-daemon --stacktrace clean assembleDebug
 
       - name: Verify APK
         shell: bash
@@ -207,8 +221,8 @@ jobs:
             exit 1
           fi
 
-          echo "APK successfully generated."
           ls -lh "$APK"
+          echo "APK successfully generated."
 
       - name: Upload Country Battle APK
         uses: actions/upload-artifact@v4
