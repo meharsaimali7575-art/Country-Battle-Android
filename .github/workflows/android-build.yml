@@ -86,10 +86,35 @@ jobs:
           java-version: '17'
 
       # 4. Install Android SDK tools
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          accept-android-sdk-licenses: false
+      - name: Setup Android SDK Manually
+  shell: bash
+  run: |
+    set -euo pipefail
+
+    echo "Android SDK: $ANDROID_HOME"
+
+    SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
+      -type f -name sdkmanager -print -quit)"
+
+    if [[ -z "$SDKMANAGER" ]]; then
+      echo "ERROR: SDK Manager not found!"
+      exit 1
+    fi
+
+    echo "Using: $SDKMANAGER"
+
+    set +o pipefail
+    yes | "$SDKMANAGER" --licenses || true
+    set -o pipefail
+
+    "$SDKMANAGER" \
+      "platform-tools" \
+      "platforms;android-35" \
+      "build-tools;35.0.0" \
+      "ndk;27.2.12479018" \
+      "cmake;3.22.1"
+
+    echo "Android SDK setup completed!"
 
       # 5. Accept licenses and install SDK packages
       - name: Accept Android Licenses and Install SDK
